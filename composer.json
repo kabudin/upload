@@ -1,0 +1,42 @@
+{
+  "name": "bud/upload",
+  "description": "Hyperf integrated file upload",
+  "type": "library",
+  "license": "MIT",
+  "keywords": [
+    "php",
+    "hyperf",
+    "upload",
+    "hyperf-upload"
+  ],
+  "autoload": {
+    "psr-4": {
+      "Bud\\Upload\\": "src/"
+    }
+  },
+  "require": {
+    "php": ">=8.1",
+    "hyperf/filesystem": "^3.1",
+    "hyperf/flysystem-oss": "^1.3",
+    "hyperf/guzzle": "^3.1",
+    "hyperf/http-message": "^3.1",
+    "hyperf/validation": "^3.1",
+    "overtrue/flysystem-cos": "^5.0",
+    "overtrue/flysystem-qiniu": "^3.0",
+    "ext-gd": "*"
+  },
+  "suggest": {
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true
+  },
+  "extra": {
+    "branch-alias": {
+      "dev-master": "3.1-dev"
+    },
+    "hyperf": {
+      "config": "Bud\\Upload\\ConfigProvider"
+    }
+  }
+}
