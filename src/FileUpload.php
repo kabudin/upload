@@ -11,9 +11,11 @@ use Hyperf\Filesystem\FilesystemFactory;
 use Hyperf\HttpMessage\Upload\UploadedFile;
 use Hyperf\Support\Filesystem\FileNotFoundException;
 use Hyperf\Support\Filesystem\Filesystem;
+use Hyperf\Support\MimeTypeExtensionGuesser;
 use Hyperf\Validation\Contract\ValidatorFactoryInterface;
 use JetBrains\PhpStorm\ArrayShape;
 use League\Flysystem\FilesystemException;
+use function Hyperf\Support\make;
 
 class FileUpload
 {
@@ -72,9 +74,9 @@ class FileUpload
         $this->verifyShardData($data);
         /* @var UploadedFile $uploadFile */
         $uploadFile = $data['package'];
+        /** @noinspection PhpUndefinedConstantInspection */
         $path = BASE_PATH . "/runtime/chunk/{$data['hash']}/";
         $chunkName = "$path{$data['index']}.chunk";
-        $storage = $storage ?? $this->config->get('file.default', 'local');
         $this->filesystem->isDirectory($path) || $this->filesystem->makeDirectory($path, 0755, true, true);
         $next_chunk = $this->getNextChunk($path, (int)$data['index'], (int)$data['total']);
         if ($this->filesystem->exists($chunkName) && $next_chunk) {
@@ -97,6 +99,7 @@ class FileUpload
                     throw new UploadException('分片文件丢失，上传失败', 500);
                 }
             }
+            $storage = $storage ?? $this->config->get('file.default', 'local');
             $location = $this->filePath . md5($data['hash']) . '.' . $extension;
             try {
                 $this->getFilesystem($storage)->write($location, $this->filesystem->sharedGet($mergePath));
@@ -105,9 +108,10 @@ class FileUpload
                 throw new UploadException($e->getMessage(), $e->getCode(), $e);
             }
             $this->filesystem->deleteDirectory($path);    // 上传成功删除整个分片目录
+            $mime_type = $data['mime_type'] ?? make(MimeTypeExtensionGuesser::class)->guessMimeType($extension);
             return $this->buildResponse([
                 'hash' => $data['hash'],   // hash值
-                'mime_type' => $data['mime_type'], // 文件类型
+                'mime_type' => $mime_type, // 文件类型
                 'storage' => $storage,  // 存储方式
                 'storage_path' => $location,  // 存储路劲
                 'original_name' => $data['name'],  // 原始文件名称
@@ -125,8 +129,8 @@ class FileUpload
     }
 
     /**
-     * 保存网络图片，仅支持 jpg|png
-     * @param string $url 网络图片地址
+     * 保存网络文件
+     * @param string $url 网络文件地址
      * @param string|null $storage 存储模式，默认获取配置文件中的默认存储模式||local
      * @return array
      */
@@ -139,11 +143,17 @@ class FileUpload
         } catch (GuzzleException $e) {
             throw new UploadException($e->getMessage(), $e->getCode(), $e);
         }
-        $mime_type = $response->getHeader('content-type')[0];
-        if (!in_array($mime_type, ['image/jpeg', 'image/png'])) {
-            throw new UploadException("Only supports image/jpeg or image/png given:$mime_type", 500);
+
+        $mime_type = $response->getHeader('content-type')[0] ?? null;
+        if ($mime_type) {
+            $suffix = make(MimeTypeExtensionGuesser::class)->guessExtension($mime_type);
+        } else {
+            $suffix = pathinfo($url, PATHINFO_EXTENSION);
+            $mime_type = make(MimeTypeExtensionGuesser::class)->guessMimeType($suffix);
         }
-        $suffix = $mime_type == 'image/jpeg' ? 'jpg' : 'png';
+        if (empty($suffix) || empty($mime_type)) {
+            throw new UploadException("File type parsing failed", 500);
+        }
         $path = BASE_PATH . "/runtime/network/";
         $original_name = md5($response->getBody()->getContents()) . '.' . $suffix;
         $temp = $path . $original_name;
@@ -180,7 +190,6 @@ class FileUpload
      */
     public function createDirectory(string $location, ?string $storage = null): bool
     {
-        $storage = $storage ?? $this->config->get('file.default', 'local');
         try {
             $this->getFilesystem($storage)->createDirectory($location);
         } catch (FilesystemException) {
@@ -198,7 +207,6 @@ class FileUpload
      */
     public function getDirectory(string $path, bool $isChildren, ?string $storage = null): ?\League\Flysystem\DirectoryListing
     {
-        $storage = $storage ?? $this->config->get('file.default', 'local');
         try {
             $contents = $this->getFilesystem($storage)->listContents($path, $isChildren);
         } catch (FilesystemException) {
@@ -215,12 +223,48 @@ class FileUpload
      */
     public function read(string $location, ?string $storage = null): string
     {
-        $storage = $storage ?? $this->config->get('file.default', 'local');
         try {
             return $this->getFilesystem($storage)->read($location);
         } catch (FilesystemException $e) {
             throw new UploadException($e->getMessage(), 500);
         }
+    }
+
+    /**
+     * 读取文件资源句柄
+     * @param string $location 文件存储url
+     * @param string|null $storage 存储模式，默认获取配置文件中的默认存储模式||local
+     * @return resource
+     */
+    public function readStream(string $location, ?string $storage = null)
+    {
+        try {
+            return $this->getFilesystem($storage)->readStream($location);
+        } catch (FilesystemException $e) {
+            throw new UploadException($e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * 读取文件字节，注意：该方法不会关闭文件资源句柄
+     * @param resource $resource 文件资源句柄
+     * @param int $start 开始位置 默认0。大于0时，会移动文件指针到指定位置
+     * @param int $end 结束位置 默认0。大于0时，读取指定长度的字节。小于等于0时，读取到文件末尾
+     * @return string
+     */
+    public function readBytes($resource, int $start = 0, int $end = 0): string
+    {
+        if (!is_resource($resource)) {
+            throw new \RuntimeException('Stream is not valid');
+        }
+        if ($start > 0) {
+            fseek($resource, $start);
+        }
+        if ($end > 0) {
+            $length = $end - $start;
+            return fread($resource, $length);
+        }
+        return stream_get_contents($resource);
     }
 
     /**
@@ -260,11 +304,12 @@ class FileUpload
 
     /**
      * 获取存储模式
-     * @param string $storage
+     * @param string|null $storage 存储模式，默认获取配置文件中的默认存储模式||local
      * @return \League\Flysystem\Filesystem
      */
-    public function getFilesystem(string $storage): \League\Flysystem\Filesystem
+    public function getFilesystem(?string $storage = null): \League\Flysystem\Filesystem
     {
+        $storage = $storage ?? $this->config->get('file.default', 'local');
         return $this->factory->get($storage);
     }
 
@@ -282,9 +327,18 @@ class FileUpload
             'suffix' => 'required',
             'name' => 'required',
             'size' => 'required',
-            'mime_type' => 'required',
         ];
-        $validator = $this->validationFactory->make($data, $rules);
+        $message = [
+            'package.required' => 'The :attribute field is required.',
+            'package.file' => 'The :attribute must be a file.',
+            'hash.required' => 'The :attribute field is required.',
+            'total.required' => 'The :attribute field is required.',
+            'index.required' => 'The :attribute field is required.',
+            'suffix.required' => 'The :attribute field is required.',
+            'name.required' => 'The :attribute field is required.',
+            'size.required' => 'The :attribute field is required.',
+        ];
+        $validator = $this->validationFactory->make($data, $rules, $message);
         if ($validator->fails()) {
             throw new UploadException($validator->errors()->first(), 422);
         }
