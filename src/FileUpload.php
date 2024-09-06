@@ -14,6 +14,7 @@ use Hyperf\Support\Filesystem\Filesystem;
 use Hyperf\Support\MimeTypeExtensionGuesser;
 use Hyperf\Validation\Contract\ValidatorFactoryInterface;
 use JetBrains\PhpStorm\ArrayShape;
+use League\Flysystem\DirectoryListing;
 use League\Flysystem\FilesystemException;
 use function Hyperf\Support\make;
 
@@ -33,11 +34,11 @@ class FileUpload
 
     /**
      * 文件上传
-     * @param \Hyperf\HttpMessage\Upload\UploadedFile $file
+     * @param UploadedFile $file
      * @param string|null $storage 存储模式，默认获取配置文件中的默认存储模式||local
      * @return array
      */
-    #[ArrayShape(['hash' => "false|string", 'mime_type' => "string", 'storage' => "string", 'storage_path' => "string", 'original_name' => "null|string", 'suffix' => "string", 'size_byte' => "int", 'url' => "string"])]
+    #[ArrayShape(['hash' => "false|string", 'mime_type' => "string", 'storage' => "string", 'storage_path' => "string", 'original_name' => "null|string", 'object_name' => "string", 'suffix' => "string", 'size_byte' => "int", 'url' => "string"])]
     public function upload(UploadedFile $file, ?string $storage = null): array
     {
         $this->checkImg($file);
@@ -56,6 +57,7 @@ class FileUpload
             'storage' => $storage,  // 存储方式
             'storage_path' => $this->filePath,  // 存储路劲
             'original_name' => $file->getClientFilename(),  // 原始文件名称
+            'object_name' => md5($hash) . '.' . $file->getExtension(),  // 新文件名称
             'suffix' => $file->getExtension(), // 文件后缀
             'size_byte' => $file->getSize(), // 文件大小字节数
             'url' => $location,  // 访问路径
@@ -74,17 +76,17 @@ class FileUpload
         $this->verifyShardData($data);
         /* @var UploadedFile $uploadFile */
         $uploadFile = $data['package'];
-        /** @noinspection PhpUndefinedConstantInspection */
         $path = BASE_PATH . "/runtime/chunk/{$data['hash']}/";
         $chunkName = "$path{$data['index']}.chunk";
         $this->filesystem->isDirectory($path) || $this->filesystem->makeDirectory($path, 0755, true, true);
         $next_chunk = $this->getNextChunk($path, (int)$data['index'], (int)$data['total']);
+        $percent = $next_chunk / $data['total'];
         if ($this->filesystem->exists($chunkName) && $next_chunk) {
             return $this->buildResponse([
                 'current_chunk' => (int)$data['index'],
                 'total_chunk' => (int)$data['total'],
                 'next_chunk' => $next_chunk,
-                'percent' => round($data['index'] / $data['total'], 2)
+                'percent' => round($percent * 100, 2)
             ], 201);
         }
         !$this->filesystem->exists($chunkName) && $uploadFile->moveTo($chunkName);
@@ -113,10 +115,11 @@ class FileUpload
                 'hash' => $data['hash'],   // hash值
                 'mime_type' => $mime_type, // 文件类型
                 'storage' => $storage,  // 存储方式
-                'storage_path' => $location,  // 存储路劲
+                'storage_path' => $this->filePath,  // 存储路劲
                 'original_name' => $data['name'],  // 原始文件名称
+                'object_name' => md5($data['hash']) . '.' . $extension,  // 新文件名称
                 'suffix' => $extension, // 文件后缀
-                'size_byte' => $data['size'], // 文件大小字节数
+                'size_byte' => (int)$data['size'], // 文件大小字节数
                 'url' => $location,  // 访问路径
             ], 200);
         }
@@ -124,7 +127,7 @@ class FileUpload
             'current_chunk' => (int)$data['index'],
             'total_chunk' => (int)$data['total'],
             'next_chunk' => $next_chunk,
-            'percent' => round($data['index'] / $data['total'], 2)
+            'percent' => round($percent * 100, 2)
         ], 201);
     }
 
@@ -134,7 +137,7 @@ class FileUpload
      * @param string|null $storage 存储模式，默认获取配置文件中的默认存储模式||local
      * @return array
      */
-    #[ArrayShape(['hash' => "false|string", 'mime_type' => "string", 'storage' => "string", 'storage_path' => "string", 'original_name' => "null|string", 'suffix' => "string", 'size_byte' => "int", 'url' => "string"])]
+    #[ArrayShape(['hash' => "false|string", 'mime_type' => "string", 'storage' => "string", 'storage_path' => "string", 'original_name' => "null|string", 'object_name' => "string", 'suffix' => "string", 'size_byte' => "int", 'url' => "string"])]
     public function saveNetworkImage(string $url, ?string $storage = null): array
     {
         $client = new Client();
@@ -176,6 +179,7 @@ class FileUpload
             'storage' => $storage,  // 存储方式
             'storage_path' => $this->filePath,  // 存储路劲
             'original_name' => $original_name,  // 原始文件名称
+            'object_name' => md5($hash) . '.' . $suffix,  // 新文件名称
             'suffix' => $suffix, // 文件后缀
             'size_byte' => $size, // 文件大小字节数
             'url' => $location,  // 访问路径
@@ -203,9 +207,9 @@ class FileUpload
      * @param string $path
      * @param bool $isChildren 是否递归获取子目录
      * @param string|null $storage 存储模式，默认获取配置文件中的默认存储模式||local
-     * @return \League\Flysystem\DirectoryListing|null
+     * @return DirectoryListing|null
      */
-    public function getDirectory(string $path, bool $isChildren, ?string $storage = null): ?\League\Flysystem\DirectoryListing
+    public function getDirectory(string $path, bool $isChildren, ?string $storage = null): ?DirectoryListing
     {
         try {
             $contents = $this->getFilesystem($storage)->listContents($path, $isChildren);
@@ -213,6 +217,20 @@ class FileUpload
             $contents = null;
         }
         return $contents;
+    }
+
+    /**
+     * 删除文件
+     * @param string $location 文件存储url
+     * @param string|null $storage 存储模式，默认获取配置文件中的默认存储模式||local
+     */
+    public function delete(string $location, ?string $storage = null)
+    {
+        try {
+            $this->getFilesystem($storage)->delete($location);
+        } catch (FilesystemException $e) {
+            throw new UploadException($e->getMessage(), 500);
+        }
     }
 
     /**
@@ -272,12 +290,17 @@ class FileUpload
      * @param string $location 图片地址
      * @param string|null $storage 存储模式，默认获取配置文件中的默认存储模式||local
      * @param int $width 缩略图宽度
-     * @param int $height 缩略图高度
+     * @param int|null $height 缩略图高度
      * @return string 二进制图片
      */
-    public function makeThumb(string $location, ?string $storage = null, int $width = 100, int $height = 100): string
+    public function makeThumb(string $location, ?string $storage = null, int $width = 100, int $height = null): string
     {
-        $binaryFiles = imagecreatefromstring($this->read($location, $storage));
+        $height = $height ?? $width;
+        try {
+            $binaryFiles = imagecreatefromstring($this->read($location, $storage));
+        } catch (\Throwable) {
+            throw new UploadException('生成缩略失败！', 500);
+        }
         // 获取原始图片的宽度和高度
         $originalWidth = imagesx($binaryFiles);
         $originalHeight = imagesy($binaryFiles);
@@ -380,7 +403,7 @@ class FileUpload
 
     /**
      * 检查图片是否存在木马
-     * @param \Hyperf\HttpMessage\Upload\UploadedFile $file
+     * @param UploadedFile $file
      */
     protected function checkImg(UploadedFile $file)
     {
