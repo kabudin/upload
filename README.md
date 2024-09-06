@@ -1,4 +1,4 @@
-# rate-limit
+# upload
 
 > 适配 hyperf 框架的文件上传功能组件整合
 
@@ -59,21 +59,6 @@ class TestController extends AbstractController
         $data = $this->upload->chunkUpload($data);
         $res = $this->service->create($data);
         return $this->response->success($res->toArray())
-    }
-    
-    /**
-     * 直接访问文件，适用于小文件
-     * @param int $id
-     * @return \Psr\Http\Message\ResponseInterface
-     */
-    #[RequestMapping(path: "file/{id}", methods: "get")]
-    public function file(int $id): ResponseInterface
-    {
-        $res = $this->service->find($id);
-        // 此处可以根据业务需求判断当前访问文件大小、格式、以及是否需要鉴权，进行相应的拦截处理
-        $Binary = $this->upload->read($res->url,$res->storage);
-        return $this->response->withHeader('content-type', $res->mime_type)
-            ->withBody(new SwooleStream($Binary));
     }
     
     /**
